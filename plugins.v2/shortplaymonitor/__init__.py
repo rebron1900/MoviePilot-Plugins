@@ -56,19 +56,19 @@ class FileMonitorHandler(FileSystemEventHandler):
 
 class ShortPlayMonitor(_PluginBase):
     # 插件名称
-    plugin_name = "短剧刮削"
+    plugin_name = "短剧刮削 改"
     # 插件描述
     plugin_desc = "监控视频短剧创建，刮削。"
     # 插件图标
     plugin_icon = "Amule_B.png"
     # 插件版本
-    plugin_version = "4.0.2"
+    plugin_version = "4.0.4"
     # 插件作者
-    plugin_author = "thsrite"
+    plugin_author = "thsrite,1900"
     # 作者主页
-    author_url = "https://github.com/thsrite"
+    author_url = "https://github.com/rebron1900"
     # 插件配置项ID前缀
-    plugin_config_prefix = "shortplaymonitor_"
+    plugin_config_prefix = "shortplaymonitor2_"
     # 加载顺序
     plugin_order = 26
     # 可使用的用户级别
