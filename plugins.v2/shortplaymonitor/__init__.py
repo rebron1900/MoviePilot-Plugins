@@ -573,21 +573,37 @@ class ShortPlayMonitor(_PluginBase):
 
     def __gen_tv_nfo_file(self, dir_path: Path, title: str):
         """
-        生成电视剧的NFO描述文件
-        :param dir_path: 电视剧根目录
+        生成电视剧的NFO描述文件，包含YouTube信息
         """
-        # 开始生成XML
-        logger.info(f"正在生成电视剧NFO文件：{dir_path.name}")
-        doc = minidom.Document()
-        root = DomUtils.add_node(doc, doc, "tvshow")
+        try:
+            logger.info(f"正在生成电视剧NFO文件：{dir_path.name}")
+            doc = minidom.Document()
+            root = DomUtils.add_node(doc, doc, "tvshow")
 
-        # 标题
-        DomUtils.add_node(doc, root, "title", title)
-        DomUtils.add_node(doc, root, "originaltitle", title)
-        DomUtils.add_node(doc, root, "season", "-1")
-        DomUtils.add_node(doc, root, "episode", "-1")
-        # 保存
-        self.__save_nfo(doc, dir_path.joinpath("tvshow.nfo"))
+            # 基础标题信息
+            DomUtils.add_node(doc, root, "title", title)
+            DomUtils.add_node(doc, root, "originaltitle", title)
+            
+            # 尝试从YouTube获取更多元数据
+            metadata = self.__get_youtube_metadata(title)
+            if metadata:
+                if metadata.get('description'):
+                    DomUtils.add_node(doc, root, "plot", metadata['description'])
+                if metadata.get('channel'):
+                    DomUtils.add_node(doc, root, "studio", metadata['channel'])
+                if metadata.get('duration'):
+                    DomUtils.add_node(doc, root, "runtime", str(metadata['duration'] // 60))
+                if metadata.get('upload_date'):
+                    DomUtils.add_node(doc, root, "premiered", metadata['upload_date'])
+            
+            # 固定值
+            DomUtils.add_node(doc, root, "season", "-1")
+            DomUtils.add_node(doc, root, "episode", "-1")
+            
+            # 保存
+            self.__save_nfo(doc, dir_path.joinpath("tvshow.nfo"))
+        except Exception as e:
+            logger.error(f"生成NFO文件失败: {str(e)}")
 
     def __save_nfo(self, doc, file_path: Path):
         """
@@ -599,34 +615,38 @@ class ShortPlayMonitor(_PluginBase):
 
     def gen_file_thumb_from_site(self, title: str, file_path: Path):
         """
-        从agsv或者萝莉站查询封面
+        从ag网站或YouTube查询封面
         """
         try:
             image = None
-            # 查询索引
+            
+            # 1. 先尝试原有站点
             domain = "agsvpt.com"
             site = SiteOper().get_by_domain(domain)
             index = SitesHelper().get_indexer(domain)
             if site:
                 req_url = f"https://www.agsvpt.com/torrents.php?search_mode=0&search_area=0&page=0&notnewword=1&cat=419&search={title}"
                 image_xpath = "//*[@id='kdescr']/img[1]/@src"
-                # 查询站点资源
                 logger.info(f"开始检索 {site.name} {title}")
                 image = self.__get_site_torrents(url=req_url, site=site, image_xpath=image_xpath, index=index)
+            
             if not image:
                 domain = "ilolicon.com"
                 site = SiteOper().get_by_domain(domain)
                 index = SitesHelper().get_indexer(domain)
                 if site:
                     req_url = f"https://share.ilolicon.com/torrents.php?search_mode=0&search_area=0&page=0&notnewword=1&cat=402&search={title}"
-
                     image_xpath = "//*[@id='kdescr']/img[1]/@src"
-                    # 查询站点资源
                     logger.info(f"开始检索 {site.name} {title}")
                     image = self.__get_site_torrents(url=req_url, site=site, image_xpath=image_xpath, index=index)
-
+            
+            # 2. 如果站点都失败，尝试YouTube
             if not image:
-                logger.error(f"检索站点 {title} 封面失败")
+                logger.info(f"开始检索 YouTube {title}")
+                image = self.__get_youtube_thumbnail(title)
+            
+            if not image:
+                logger.error(f"所有来源检索 {title} 封面失败")
                 return None
 
             # 下载图片保存
@@ -634,9 +654,128 @@ class ShortPlayMonitor(_PluginBase):
                 return file_path
             return None
         except Exception as e:
-            logger.error(f"检索站点 {title} 封面失败 {str(e)}")
+            logger.error(f"检索封面失败 {str(e)}")
             return None
 
+    
+    def __get_youtube_thumbnail(self, title: str) -> str:
+        """
+        从YouTube获取视频缩略图
+        返回最高分辨率的缩略图URL
+        """
+        try:
+            # 构造YouTube搜索URL
+            search_query = quote(title)
+            search_url = f"https://www.youtube.com/results?search_query={search_query}"
+            
+            # 发送请求获取搜索结果
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            }
+            response = requests.get(search_url, headers=headers, timeout=10)
+            response.raise_for_status()
+            
+            # 解析搜索结果
+            soup = BeautifulSoup(response.text, 'html.parser')
+            script_tags = soup.find_all('script')
+            
+            # 在脚本中查找视频信息
+            video_id = None
+            for script in script_tags:
+                if 'ytInitialData' in script.text:
+                    # 使用正则表达式提取视频ID
+                    match = re.search(r'"videoId":"([a-zA-Z0-9_-]{11})"', script.text)
+                    if match:
+                        video_id = match.group(1)
+                        break
+            
+            if not video_id:
+                logger.warning(f"YouTube未找到相关视频: {title}")
+                return None
+            
+            # 构造最高分辨率缩略图URL
+            thumbnail_url = f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"
+            
+            # 验证缩略图是否存在
+            response = requests.head(thumbnail_url, timeout=5)
+            if response.status_code == 404:
+                # 回退到标准分辨率
+                thumbnail_url = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
+            
+            return thumbnail_url
+        except Exception as e:
+            logger.error(f"YouTube搜索失败: {str(e)}")
+            return None
+
+
+    def __get_youtube_metadata(self, title: str) -> dict:
+        """
+        从YouTube获取视频元数据
+        返回包含视频信息的字典
+        """
+        try:
+            # 先获取视频ID
+            thumbnail_url = self.__get_youtube_thumbnail(title)
+            if not thumbnail_url:
+                return {}
+            
+            # 从缩略图URL提取视频ID
+            video_id = thumbnail_url.split('/')[-2]
+            
+            # 构造视频详情页URL
+            video_url = f"https://www.youtube.com/watch?v={video_id}"
+            
+            # 获取视频页面
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            }
+            response = requests.get(video_url, headers=headers, timeout=10)
+            response.raise_for_status()
+            
+            # 解析元数据
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # 提取描述
+            description = ""
+            description_tag = soup.find("meta", {"name": "description"})
+            if description_tag:
+                description = description_tag.get("content", "")
+            
+            # 提取频道名称
+            channel = ""
+            channel_tag = soup.find("link", {"itemprop": "name"})
+            if channel_tag:
+                channel = channel_tag.get("content", "")
+            
+            # 提取时长
+            duration = 0
+            duration_tag = soup.find("meta", {"itemprop": "duration"})
+            if duration_tag:
+                iso_duration = duration_tag.get("content", "")
+                # 转换ISO 8601格式为秒数
+                match = re.match(r'PT(\d+)M(\d+)S', iso_duration)
+                if match:
+                    duration = int(match.group(1)) * 60 + int(match.group(2))
+            
+            # 提取上传日期
+            upload_date = ""
+            date_tag = soup.find("meta", {"itemprop": "datePublished"})
+            if date_tag:
+                upload_date = date_tag.get("content", "")
+            
+            return {
+                'description': description,
+                'channel': channel,
+                'duration': duration,
+                'upload_date': upload_date
+            }
+        except Exception as e:
+            logger.error(f"获取YouTube元数据失败: {str(e)}")
+            return {}
+
+    
+
+    
     @retry(RequestException, logger=logger)
     def __save_image(self, url: str, file_path: Path):
         """
