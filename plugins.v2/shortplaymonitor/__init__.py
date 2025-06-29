@@ -2,10 +2,13 @@ import datetime
 import os
 import re
 import threading
+import requests
 from pathlib import Path
 from threading import Lock
 from typing import Any, List, Dict, Tuple, Optional
 from xml.dom import minidom
+from bs4 import BeautifulSoup
+from urllib.parse import quote
 
 import chardet
 import pytz
